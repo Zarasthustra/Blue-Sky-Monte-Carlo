@@ -15,6 +15,7 @@ import numpy as np
 import numba as nb
 import time
 
+
 #from KolafaNezbeda import ULJ, PressureLJ, FreeEnergyLJ_res
 ###############################################################################
 #
@@ -31,11 +32,12 @@ import time
 #
 ###############################################################################
 
-number_of_atoms = 400
-number_of_atom_types = 1 #not actually used, this code is for monatomic LJ
+number_of_atoms = 300  
 atomType = "Ar"
-epsilon = 1.0
-sigma   = 1.0
+epsilon = (0.8, 0.9, 1.0)
+sigma   = (0.8, 0.9, 1.0)
+composition = (100,100,100)
+number_of_atom_types = len(composition)
 boxSize = 8.93
 cutOff = boxSize / 2
 temperature = 1.0
@@ -48,13 +50,24 @@ outputInterval=2000
 #
 ###############################################################################
 
+class Table():
+    def __init__(self, epsTable,sigTable):
+        self.eps = np.asarray(epsTable)
+        self.sig = np.asarray(sigTable)
+        
+        
+#        if rule.lower() == ("vdw"):
+#            self.table = np.asarray([(x + y)/2 for x in vector for y in vector])
+#        elif rule.lower() == ("LB" or "Lorenz-Berthelot"):
+#            self.table = np.asarray([np.sqrt(x+y) for x in vector for y in vector])
+
 class System():
     
     def __init__(self,number_of_atoms, epsilon, sigma, boxSize, temp, cutOff,atomType):
         self.natoms = number_of_atoms
         self.atomType = atomType
-        self.eps    = epsilon
-        self.sig    = sigma
+        self.eps    = np.asarray(epsilon)
+        self.sig    = np.asarray(sigma)
         self.boxSize = boxSize
         self.volume  = boxSize ** 3
         self.rho     = self.natoms / self.volume
@@ -69,9 +82,16 @@ class System():
         self.positions = np.zeros((self.natoms,3),dtype=np.float_)
         self.velocities = None
         self.forces = None
+        
+        self.GenerateVdWTable(self.eps, self.sig,rule1='vdw',rule2='LB')
 
     def GenerateRandomBox(self):
         self.positions = np.random.rand(self.natoms,3) * self.boxSize
+        self.atomTypes = np.zeros((self.natoms),dtype=np.int_)
+        start = 0
+        for iter,item in enumerate(composition):
+            self.atomTypes[start:start + item] = iter
+            start += item
      
     def GetPressure(self,virial):
         return self.rho / self.beta  + virial / ( 3.0 * self.volume )
@@ -85,26 +105,35 @@ class System():
         return 16.0 / 3.0 * np.pi * self.rho * self.sig **3 * self.eps * ( (1.0/3.0)*(self.sig / self.rCut)**9 - (self.sig / self.rCut)**3 )
     def TotalEnergy(self):
         self.energy,self.virial = totalEnergy(self.positions, self.boxSize, \
-                                              self.rCut_sq, self.natoms, sig=self.sig, eps=self.eps)
+                                              self.rCut_sq, self.natoms, \
+                                              sig=self.vdwTable.sig, \
+                                              eps=self.vdwTable.eps,\
+                                              atomtype = self.atomTypes)
+    def GenerateVdWTable(self,vector1,vector2,rule1='vdw',rule2='LB'):
+        self.vdwTable = Table(np.asarray([(x + y)/2 for x in vector1 for y in vector1]).reshape(3,3), \
+                              np.asarray([np.sqrt(x+y) for x in vector2 for y in vector2]).reshape(3,3) \
+                              )  
 
 
 @nb.njit
-def totalEnergy(r,box,r_cut_box_sq,n,sig=1,eps=1):
+def totalEnergy(r,box,r_cut_box_sq,n,sig,eps,atomtype):
     potential = 0.0
     virial = 0.0
     for i in range(n-1): # Outer loop over atoms
+        ai = atomtype[i]
         for j in range(i+1,n): # Inner loop over atoms
+            aj = atomtype[j]
             rij = r[i,:] - r[j,:]       # Separation vector
             rij = rij - np.rint ( rij / box  ) * box # Periodic boundary conditions in box=1 units
             rij_sq = np.sum ( rij**2 )  # Squared separation
 
             if rij_sq < r_cut_box_sq: # Check within cutoff
 
-                sr2    = sig / rij_sq    # (sigma/rij)**2
+                sr2    = sig[ai,aj] / rij_sq    # (sigma/rij)**2
                 sr6  = sr2 ** 3
                 sr12 = sr6 ** 2
-                pot  = eps * (sr12 - sr6)        # LJ pair potential (cut but not shifted)
-                vir  = eps * (2.0 * sr12 - sr6) 
+                pot  = eps[ai,aj] * (sr12 - sr6)        # LJ pair potential (cut but not shifted)
+                vir  = eps[ai,aj] * (2.0 * sr12 - sr6) 
                 
                 potential += pot
                 virial += vir
@@ -113,27 +142,27 @@ def totalEnergy(r,box,r_cut_box_sq,n,sig=1,eps=1):
                 
 """ THis is outside class since Numba has issues with compiling methods """
 @nb.njit #(nb.int64,nb.float64[:],nb.float64,nb.float64,nb.float64[:,:],nb.float64[:,:], nb.float64,nb.float64, nb.float64)       
-def updateEnergies(ri, rj, box, r_cut_box_sq, eps, sig):
+def updateEnergies(i, ri, rj, box, r_cut_box_sq, eps, sig, atomtypes,ai):
     rsq = 0.0
     potential = 0.0
     virial = 0.0
-
+    ai = ai
     """Calculate chosen particle's potential energy with rest of system """
 
     #for index, rj in enumerate(r):
-    for index in range(len(rj) ):
-
-        rij = ri - rj[index] #rj            # Separation vector
+    for j in range(len(rj) ):
+        aj = atomtypes[j]
+        rij = ri - rj[j] #rj            # Separation vector
         rij = rij - np.rint(rij / box ) * box # Mirror Image Seperation
 
         rsq = np.sum(rij**2)  # Squared separation
         if rsq < r_cut_box_sq: # Check within cutoff
 
-            sr2    = sig / rsq    # (sigma/rij)**2
+            sr2    = sig[ai,aj] / rsq    # (sigma/rij)**2
             sr6  = sr2 ** 3
             sr12 = sr6 ** 2
-            pot  = eps * (sr12 - sr6)        # LJ pair potential (cut but not shifted)
-            vir  = eps * (2.0 * sr12 - sr6)                    # LJ pair virial
+            pot  = eps[ai,aj] * (sr12 - sr6)        # LJ pair potential (cut but not shifted)
+            vir  = eps[ai,aj] * (2.0 * sr12 - sr6)                    # LJ pair virial
             
             potential += pot
             virial += vir
@@ -188,9 +217,11 @@ class MC_NVT(MCSample):
             steps += 1
             part =self.PickParticle()
             rj = np.delete(r,part,0) # Array of all the other atoms
+            atypes = np.delete(self.system.atomTypes,part,0)
             ri = self.MoveParticle(self.dr_max, r[part,:])
             old_potential, old_virial = self.system.energy, self.system.virial
-            new_potential, new_virial = self.UpdateEnergies(ri,rj)
+            new_potential, new_virial = self.UpdateEnergies(part,ri,rj,atypes, \
+                                                            self.system.atomTypes[part])
             TEST = self.Metropolis( self.system.beta* (new_potential - old_potential)  )
             
             if TEST:
@@ -221,14 +252,14 @@ class MC_NVT(MCSample):
         
         self.nSamples += 1
         self.pressure += self.system.GetPressure(self.system.virial)
-        self.pressure += self.system.PressureTailCorrection()
+        #self.pressure += self.system.PressureTailCorrection()
         self.virial   += self.system.virial
         self.energy   += self.system.energy
         
-        print('Pressure: {:6.4f}, Energy: {:6.4f}, Samples: {:6d} Pressure: {:6.4f} PCorr {:6.4f}'.format(
-                self.pressure/self.nSamples, self.energy/self.nSamples, \
-                self.nSamples,self.system.GetPressure(self.system.virial), \
-                self.system.PressureTailCorrection()))
+        print('Pressure: {:6.4f}, Energy: {:6.4f}, Samples: {:6d} Pressure: {:6.4f} '.format(  # PCorr {:6.4f}
+                self.pressure/self.nSamples, self.energy/self.nSamples, self.nSamples,self.system.GetPressure(self.system.virial))) #,, \
+        #self.system.PressureTailCorrection()
+
     
     def Metropolis(self, delta ):
         """Conduct Metropolis test, with safeguards."""
@@ -246,12 +277,13 @@ class MC_NVT(MCSample):
 
 ############################################################################### 
 
-    def UpdateEnergies(self,ri,rj):
+    def UpdateEnergies(self,i,ri,rj,atomtypes,ai):
         """Calls outside function because it is @njit"""
 
-        eps = self.system.eps
-        sig = self.system.sig
-        return updateEnergies(ri, rj, self.system.boxSize, self.system.rCut_sq, eps, sig)
+        eps = self.system.vdwTable.eps
+        sig = self.system.vdwTable.sig
+        return updateEnergies(i,ri, rj, self.system.boxSize, self.system.rCut_sq, \
+                              eps, sig,atomtypes,ai)
 
 ###############################################################################
    
