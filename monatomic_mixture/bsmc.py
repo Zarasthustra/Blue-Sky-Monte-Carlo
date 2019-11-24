@@ -38,7 +38,7 @@ epsilon = (0.8, 0.9, 1.0)
 sigma   = (0.8, 0.9, 1.0)
 composition = (100,100,100)
 number_of_atom_types = len(composition)
-boxSize = 8.93
+boxSize = 12.93
 cutOff = boxSize / 2
 temperature = 1.0
 nEquilSteps = 100000
@@ -179,9 +179,17 @@ class MCSample():
         self.virial = virial
         self.energy = energy
         self.acceptTranslation = at
+        self.moveAccept = 0
+        self.moveAttempt = 0
         self.acceptVolume = av
+        self.volumeAccept = 0
+        self.volumeAttempt = 0
         self.acceptReaction = ar
+        self.reactionAccept = 0
+        self.reactionAttempt = 0
         self.acceptSwap = asw
+        self.swapAccept = 0
+        self.swapAttempt = 0
         self.nSamples = 0
         self.outputInterval = output
         self.updateInterval = output
@@ -192,7 +200,7 @@ class MC_NVT(MCSample):
 
     def __init__(self, steps, system, runType='Blank',rho=0.0, pressure=0.0, \
                  virial=0.0, energy=0.0, at=0.5, av=0.5, ar=0.5, asw=0.5, \
-                 output=20000,dr_max=0.1):
+                 output=2000,dr_max=0.1):
         MCSample.__init__(self,rho=rho,pressure=pressure,virial=virial, \
                           energy=energy,at=at,av=av,ar=ar,asw=asw, \
                           output=output)
@@ -211,27 +219,35 @@ class MC_NVT(MCSample):
         #                          NVT Simulation
         #
         #######################################################################        
-        acceptedMoves = 0
+
         steps = 0
         while steps < self.nSteps:
+            
             steps += 1
             part =self.PickParticle()
+            
+            ri = r[part,:]
             rj = np.delete(r,part,0) # Array of all the other atoms
             atypes = np.delete(self.system.atomTypes,part,0)
+            
+            old_potential, old_virial = self.UpdateEnergies(part,ri,rj,atypes, \
+                                                            self.system.atomTypes[part])
             ri = self.MoveParticle(self.dr_max, r[part,:])
-            old_potential, old_virial = self.system.energy, self.system.virial
+            
             new_potential, new_virial = self.UpdateEnergies(part,ri,rj,atypes, \
                                                             self.system.atomTypes[part])
             TEST = self.Metropolis( self.system.beta* (new_potential - old_potential)  )
+            self.moveAttempt += 1
             
             if TEST:
                 r[part,:] = ri
-                self.system.energy += new_potential - old_potential
-                self.system.virial += new_virial - old_virial
-                acceptedMoves += 1
+                self.system.energy += (new_potential - old_potential)
+                self.system.virial += (new_virial - old_virial)
+                self.moveAccept += 1
                 
             if steps % self.outputInterval == 0:
                 self.Sample()
+
             if steps % self.updateInterval == 0:
                 self.UpdateMaxMove()
                 #PrintPDB(self.system, steps ,"during_")
@@ -239,8 +255,19 @@ class MC_NVT(MCSample):
         self.system.positions = r
         #######################################################################   
     def UpdateMaxMove(self):
-        pass
+
+        ratio = self.moveAccept / self.moveAttempt
+
+        dr_old = self.dr_max
+
+        self.dr_max = self.dr_max * ratio / self.acceptTranslation 
+        dr_ratio = self.dr_max / dr_old
+        if dr_ratio > 1.5: self.dr_max = dr_old * 1.5
+        if dr_ratio < 0.5: self.dr_max = dr_old * 0.5
+        if self.dr_max > self.system.boxSize/2: self.dr_max = self.system.boxSize/2
         
+
+
     def InitializeSimulation(self):
         """
         Calculate pairwise energy and virial for entire system
@@ -273,7 +300,6 @@ class MC_NVT(MCSample):
         else:
             zeta = np.random.rand() # Uniform random number in range (0,1)
             return np.exp(-delta) > zeta # Metropolis test
-
 
 ############################################################################### 
 
