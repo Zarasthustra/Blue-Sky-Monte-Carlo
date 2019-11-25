@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 Created on Sat Nov 23 21:09:10 2019
 
@@ -32,16 +31,17 @@ import time
 #
 ###############################################################################
 
-number_of_atoms = 300  
+ 
 atomType = "Ar"
 epsilon = (0.8, 0.9, 1.0)
 sigma   = (0.8, 0.9, 1.0)
-composition = (100,100,100)
+composition = np.array([100,100,100])
+number_of_atoms = sum(composition)
 number_of_atom_types = len(composition)
-boxSize = 12.93
+boxSize = 8.93
 cutOff = boxSize / 2
 temperature = 1.0
-nEquilSteps = 100000
+nEquilSteps = 1000000
 outputInterval=2000
 
 ###############################################################################
@@ -113,7 +113,8 @@ class System():
         self.vdwTable = Table(np.asarray([(x + y)/2 for x in vector1 for y in vector1]).reshape(3,3), \
                               np.asarray([np.sqrt(x+y) for x in vector2 for y in vector2]).reshape(3,3) \
                               )  
-
+    def WidomInsertion(self,molecule):
+        print("testing")
 
 @nb.njit
 def totalEnergy(r,box,r_cut_box_sq,n,sig,eps,atomtype):
@@ -314,7 +315,7 @@ class MC_NVT(MCSample):
 ###############################################################################
    
     def MoveParticle(self,dr_max,r):
-        return r + (np.random.rand(3) - [1,1,1]) * dr_max
+        return r + (np.random.rand(3) - [0.5,0.5,0.5]) * dr_max
                              
     def pick_r(self, w ): 
         # pick a particle based on the "rosenbluth" weights
@@ -389,7 +390,7 @@ print("Time to equilibrate: ", t_equil1-t_equil0)
 PrintPDB(equilibrate.system, equilibrate.nSteps,"equil_")
 
 t_prod0=time.time()
-production1  = MC_NVT(1000000,  equilibrate.system, "Production1")
+production1  = MC_NVT(10000000,  equilibrate.system, "Production1")
 #production2  = KMC_NVT(1000,  overLap, production1.system, "Production2")
 t_prod1=time.time()
 print("Time for production: ", t_prod1-t_prod0)
