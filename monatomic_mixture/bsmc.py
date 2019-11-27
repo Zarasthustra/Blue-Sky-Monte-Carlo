@@ -41,7 +41,8 @@ number_of_atom_types = len(composition)
 boxSize = 8.93
 cutOff = boxSize / 2
 temperature = 1.0
-nEquilSteps = 1000000
+beta = 1/ temperature
+nEquilSteps = 100000
 outputInterval=2000
 
 ###############################################################################
@@ -124,8 +125,10 @@ def totalEnergy(r,box,r_cut_box_sq,n,sig,eps,atomtype):
         ai = atomtype[i]
         for j in range(i+1,n): # Inner loop over atoms
             aj = atomtype[j]
-            rij = r[i,:] - r[j,:]       # Separation vector
-            rij = rij - np.rint ( rij / box  ) * box # Periodic boundary conditions in box=1 units
+            rij = r[i,:] - r[j,:]      # Separation vector
+            rij = np.where(rij>box,rij-box,rij)
+            rij = np.where(rij<0,rij+box,rij)
+           # rij = rij - np.rint ( rij / box  ) * box # Periodic boundary conditions in box=1 units
             rij_sq = np.sum ( rij**2 )  # Squared separation
 
             if rij_sq < r_cut_box_sq: # Check within cutoff
@@ -143,7 +146,7 @@ def totalEnergy(r,box,r_cut_box_sq,n,sig,eps,atomtype):
                 
 """ THis is outside class since Numba has issues with compiling methods """
 @nb.njit #(nb.int64,nb.float64[:],nb.float64,nb.float64,nb.float64[:,:],nb.float64[:,:], nb.float64,nb.float64, nb.float64)       
-def updateEnergies(i, ri, rj, box, r_cut_box_sq, eps, sig, atomtypes,ai):
+def updateEnergies(ri, rj, box, r_cut_box_sq, eps, sig, atomtypes,ai):
     rsq = 0.0
     potential = 0.0
     virial = 0.0
@@ -154,7 +157,9 @@ def updateEnergies(i, ri, rj, box, r_cut_box_sq, eps, sig, atomtypes,ai):
     for j in range(len(rj) ):
         aj = atomtypes[j]
         rij = ri - rj[j] #rj            # Separation vector
-        rij = rij - np.rint(rij / box ) * box # Mirror Image Seperation
+        rij = np.where(rij>box,rij-box,rij)
+        rij = np.where(rij<0,rij+box,rij)
+       # rij = rij - np.rint ( rij / box  ) * box # Periodic boundary conditions in box=1 units
 
         rsq = np.sum(rij**2)  # Squared separation
         if rsq < r_cut_box_sq: # Check within cutoff
@@ -170,6 +175,18 @@ def updateEnergies(i, ri, rj, box, r_cut_box_sq, eps, sig, atomtypes,ai):
 
                             
     return 4*potential, 24*virial
+
+@nb.njit    
+def WidomInsertion(rj,box,r_cut_box_sq,eps, sig, atomtypes,ai, N):
+    # molType :: Integer (in)
+    ri = np.random.rand(3) * box          # random coords in box
+    chemPot = 0.0
+    for i in range(N):
+        testPot, testVirial = updateEnergies( ri, rj, box, r_cut_box_sq, eps, sig, atomtypes,ai)
+        chemPot += np.exp( -beta * testPot )
+    
+    #print("chemPot: ", chemPot, beta)
+    return -np.log( chemPot/N )
        
 class MCSample():
     def __init__(self,rho=0.0,pressure=0.0,virial=0.0,energy=0.0,at=0.5, \
@@ -208,6 +225,10 @@ class MC_NVT(MCSample):
         self.nSteps = steps
         self.system = system
         self.runType = runType
+        chemPot = []
+        chemSample = 0
+        NchemTests = 10000
+        testMol = 1
         
 
         print('Beginning {0:s} for {1:d} steps at {2:f} temperature'.format(
@@ -225,17 +246,19 @@ class MC_NVT(MCSample):
         while steps < self.nSteps:
             
             steps += 1
-            part =self.PickParticle()
+            part = self.PickParticle()
             
             ri = r[part,:]
             rj = np.delete(r,part,0) # Array of all the other atoms
             atypes = np.delete(self.system.atomTypes,part,0)
             
-            old_potential, old_virial = self.UpdateEnergies(part,ri,rj,atypes, \
+            old_potential, old_virial = self.UpdateEnergies(ri,rj,atypes, \
                                                             self.system.atomTypes[part])
-            ri = self.MoveParticle(self.dr_max, r[part,:])
+            ri = self.MoveParticle(self.dr_max, r[part,:],self.system.boxSize)
             
-            new_potential, new_virial = self.UpdateEnergies(part,ri,rj,atypes, \
+            if ri[0] > self.system.boxSize or ri[0] < 0:
+                print("FAKE NEWS: ", ri, self.system.boxSize)
+            new_potential, new_virial = self.UpdateEnergies(ri,rj,atypes, \
                                                             self.system.atomTypes[part])
             TEST = self.Metropolis( self.system.beta* (new_potential - old_potential)  )
             self.moveAttempt += 1
@@ -248,7 +271,19 @@ class MC_NVT(MCSample):
                 
             if steps % self.outputInterval == 0:
                 self.Sample()
+                
+                eps = self.system.vdwTable.eps
+                sig = self.system.vdwTable.sig
+                
+                chemPot.append( WidomInsertion(r, self.system.boxSize,\
+                                               self.system.rCut_sq, eps, sig, \
+                                               self.system.atomTypes,testMol, \
+                                               NchemTests) 
+                              )
 
+                print("Chemical Potential: ", chemPot[chemSample])
+                chemSample += 1
+                
             if steps % self.updateInterval == 0:
                 self.UpdateMaxMove()
                 #PrintPDB(self.system, steps ,"during_")
@@ -304,18 +339,18 @@ class MC_NVT(MCSample):
 
 ############################################################################### 
 
-    def UpdateEnergies(self,i,ri,rj,atomtypes,ai):
+    def UpdateEnergies(self,ri,rj,atomtypes,ai):
         """Calls outside function because it is @njit"""
 
         eps = self.system.vdwTable.eps
         sig = self.system.vdwTable.sig
-        return updateEnergies(i,ri, rj, self.system.boxSize, self.system.rCut_sq, \
+        return updateEnergies(ri, rj, self.system.boxSize, self.system.rCut_sq, \
                               eps, sig,atomtypes,ai)
 
 ###############################################################################
    
-    def MoveParticle(self,dr_max,r):
-        return r + (np.random.rand(3) - [0.5,0.5,0.5]) * dr_max
+    def MoveParticle(self,dr_max,r,box):     
+        return PBC(r + (np.random.rand(3) - [0.5,0.5,0.5]) * dr_max, box   )
                              
     def pick_r(self, w ): 
         # pick a particle based on the "rosenbluth" weights
@@ -338,7 +373,10 @@ class MC_NVT(MCSample):
     def PickParticle(self):
         return np.random.randint(0,high=self.system.natoms-1) 
 
-
+def PBC(vector,box):
+    vector = np.where( vector > box, vector - box, vector)
+    vector = np.where( vector < 0, vector + box, vector)
+    return vector
 
 def LennardJones(rij, sigma, epsilon):
     sr = sigma / rij
@@ -366,6 +404,8 @@ def PrintPDB(system,step, name=""):
         f.write('{}{} {} {} {}{}    {}{}{}{}{}{}\n'.format( j[0],j[1],j[2],j[3],j[4],j[5],j[6],j[7],j[8],j[9],j[10],j[11]))
 
     f.close()  
+
+    
 
         
         
