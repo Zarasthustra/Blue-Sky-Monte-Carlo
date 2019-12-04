@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """
 Created on Sat Nov 23 21:09:10 2019
 
@@ -35,10 +36,10 @@ import time
 atomType = "Ar"
 epsilon = (0.8, 0.9, 1.0)
 sigma   = (0.8, 0.9, 1.0)
-composition = np.array([100,100,100])
+composition = np.array([100,200,100])
 number_of_atoms = sum(composition)
 number_of_atom_types = len(composition)
-boxSize = 8.93
+boxSize = 7.93
 cutOff = boxSize / 2
 temperature = 1.0
 beta = 1/ temperature
@@ -125,11 +126,9 @@ def totalEnergy(r,box,r_cut_box_sq,n,sig,eps,atomtype):
         ai = atomtype[i]
         for j in range(i+1,n): # Inner loop over atoms
             aj = atomtype[j]
-            rij = r[i,:] - r[j,:]      # Separation vector
-            rij = np.where(rij>box,rij-box,rij)
-            rij = np.where(rij<0,rij+box,rij)
-           # rij = rij - np.rint ( rij / box  ) * box # Periodic boundary conditions in box=1 units
-            rij_sq = np.sum ( rij**2 )  # Squared separation
+            rij = np.absolute(r[i,:] - r[j,:])      # Separation vector
+            rij = np.minimum(rij,box-rij)
+            rij_sq = np.sum( rij**2 )  # Squared separation
 
             if rij_sq < r_cut_box_sq: # Check within cutoff
 
@@ -156,10 +155,8 @@ def updateEnergies(ri, rj, box, r_cut_box_sq, eps, sig, atomtypes,ai):
     #for index, rj in enumerate(r):
     for j in range(len(rj) ):
         aj = atomtypes[j]
-        rij = ri - rj[j] #rj            # Separation vector
-        rij = np.where(rij>box,rij-box,rij)
-        rij = np.where(rij<0,rij+box,rij)
-       # rij = rij - np.rint ( rij / box  ) * box # Periodic boundary conditions in box=1 units
+        rij = np.absolute(ri - rj[j]) #rj            # Separation vector
+        rij = np.minimum(rij,box-rij)
 
         rsq = np.sum(rij**2)  # Squared separation
         if rsq < r_cut_box_sq: # Check within cutoff
@@ -179,10 +176,12 @@ def updateEnergies(ri, rj, box, r_cut_box_sq, eps, sig, atomtypes,ai):
 @nb.njit    
 def WidomInsertion(rj,box,r_cut_box_sq,eps, sig, atomtypes,ai, N):
     # molType :: Integer (in)
-    ri = np.random.rand(3) * box          # random coords in box
+             # random coords in box
     chemPot = 0.0
     for i in range(N):
-        testPot, testVirial = updateEnergies( ri, rj, box, r_cut_box_sq, eps, sig, atomtypes,ai)
+        ri = np.random.rand(3) * box 
+        testPot, testVirial = updateEnergies( ri, rj, box, r_cut_box_sq, eps,
+                                             sig, atomtypes,ai)
         chemPot += np.exp( -beta * testPot )
     
     #print("chemPot: ", chemPot, beta)
@@ -227,8 +226,9 @@ class MC_NVT(MCSample):
         self.runType = runType
         chemPot = []
         chemSample = 0
-        NchemTests = 10000
+        NchemTests = 1000
         testMol = 1
+        WIDOM = False
         
 
         print('Beginning {0:s} for {1:d} steps at {2:f} temperature'.format(
@@ -275,18 +275,19 @@ class MC_NVT(MCSample):
                 eps = self.system.vdwTable.eps
                 sig = self.system.vdwTable.sig
                 
-                chemPot.append( WidomInsertion(r, self.system.boxSize,\
+                if WIDOM:
+                    chemPot.append( WidomInsertion(r, self.system.boxSize,\
                                                self.system.rCut_sq, eps, sig, \
                                                self.system.atomTypes,testMol, \
                                                NchemTests) 
-                              )
+                                  )
 
-                print("Chemical Potential: ", chemPot[chemSample])
-                chemSample += 1
+                    print("Chemical Potential: ", chemPot[chemSample])
+                    chemSample += 1
                 
             if steps % self.updateInterval == 0:
                 self.UpdateMaxMove()
-                #PrintPDB(self.system, steps ,"during_")
+                PrintPDB(self.system, steps ,"during_")
             
         self.system.positions = r
         #######################################################################   
@@ -372,10 +373,11 @@ class MC_NVT(MCSample):
 
     def PickParticle(self):
         return np.random.randint(0,high=self.system.natoms-1) 
-
+@nb.njit
 def PBC(vector,box):
-    vector = np.where( vector > box, vector - box, vector)
-    vector = np.where( vector < 0, vector + box, vector)
+    for i in range(3):
+        if vector[i] > box: vector[i] -= box
+        if vector[i] < 0: vector[i] += box
     return vector
 
 def LennardJones(rij, sigma, epsilon):
@@ -404,11 +406,7 @@ def PrintPDB(system,step, name=""):
         f.write('{}{} {} {} {}{}    {}{}{}{}{}{}\n'.format( j[0],j[1],j[2],j[3],j[4],j[5],j[6],j[7],j[8],j[9],j[10],j[11]))
 
     f.close()  
-
-    
-
-        
-        
+      
 ###############################################################################
 #
 #          Begin Simulation - Equilibrate then Production Run
@@ -423,7 +421,12 @@ phase1.GenerateRandomBox()
 PrintPDB(phase1, 0,"pre_")
 
 t_equil0=time.time()
-equilibrate = MC_NVT(nEquilSteps,  phase1, "Equilibration")
+preequilibrate = MC_NVT(10000,  phase1, "Equilibration")
+t_equil1=time.time()
+print("Time to equilibrate: ", t_equil1-t_equil0)
+
+t_equil0=time.time()
+equilibrate = MC_NVT(nEquilSteps,  preequilibrate.system, "Equilibration")
 t_equil1=time.time()
 print("Time to equilibrate: ", t_equil1-t_equil0)
 
