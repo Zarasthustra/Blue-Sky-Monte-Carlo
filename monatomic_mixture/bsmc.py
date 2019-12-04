@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """
 Created on Sat Nov 23 21:09:10 2019
 
@@ -33,8 +34,8 @@ import time
 
  
 atomType = "Ar"
-epsilon = (0.8, 0.9, 1.0)
-sigma   = (0.8, 0.9, 1.0)
+epsilon = (1.0, 1.0, 1.0)
+sigma   = (1.0, 1.0, 1.0)
 composition = np.array([100,200,100])
 number_of_atoms = sum(composition)
 number_of_atom_types = len(composition)
@@ -98,18 +99,18 @@ class System():
         return self.rho / self.beta  + virial / ( 3.0 * self.volume )
     
     def PressureTailCorrection(self):
-        return  16.0 / 3.0 * np.pi * self.rho **2 * self.sig **3 * self.eps \
-                * ( (2.0/3.0)*(self.sig / self.rCut)**9 \
-                   - (self.sig / self.rCut)**3 )
+        return  16.0 / 3.0 * np.pi * self.rho **2 * self.sig[1] **3 * self.eps[1] \
+                * ( (2.0/3.0)*(self.sig[1] / self.rCut)**9 \
+                   - (self.sig[1] / self.rCut)**3 )
     def EnergyTailCorrection(self):
-        return  8.0 / 3.0 * np.pi * self.rho * self.natoms * self.sig **3 \
-                * self.eps * ( (1.0/3.0)*(self.sig / self.rCut)**9 \
-                 - (self.sig / self.rCut)**3 )
+        return  8.0 / 3.0 * np.pi * self.rho * self.natoms * self.sig[1] **3 \
+                * self.eps[1] * ( (1.0/3.0)*(self.sig[1] / self.rCut)**9 \
+                 - (self.sig[1] / self.rCut)**3 )
     def ChemPotTailCorrection(self):
         """ beta * mu_corr = 2 * u_corr """
-        return 16.0 / 3.0 * np.pi * self.rho * self.sig **3 * self.eps \
-               * ( (1.0/3.0)*(self.sig / self.rCut)**9 \
-               - (self.sig / self.rCut)**3 )
+        return 16.0 / 3.0 * np.pi * self.rho * self.sig[1] **3 * self.eps[1] \
+               * ( (1.0/3.0)*(self.sig[1] / self.rCut)**9 \
+               - (self.sig[1] / self.rCut)**3 )
     def TotalEnergy(self):
         self.energy,self.virial = totalEnergy(self.positions, self.boxSize, \
                                               self.rCut_sq, self.natoms, \
@@ -119,7 +120,7 @@ class System():
     def GenerateVdWTable(self,vector1,vector2,rule1='vdw',rule2='LB'):
         self.vdwTable = Table(np.asarray([(x + y)/2 for x in vector1 for y \
                                           in vector1]).reshape(3,3), \
-                              np.asarray([np.sqrt(x+y) for x in vector2 for y \
+                              np.asarray([np.sqrt(x*y) for x in vector2 for y \
                                           in vector2]).reshape(3,3) \
                               )  
     def WidomInsertion(self,molecule):
@@ -139,7 +140,7 @@ def totalEnergy(r,box,r_cut_box_sq,n,sig,eps,atomtype):
 
             if rij_sq < r_cut_box_sq: # Check within cutoff
 
-                sr2    = sig[ai,aj] / rij_sq    # (sigma/rij)**2
+                sr2  = sig[ai,aj]**2 / rij_sq    # (sigma/rij)**2
                 sr6  = sr2 ** 3
                 sr12 = sr6 ** 2
                 pot  = eps[ai,aj] * (sr12 - sr6)
@@ -169,7 +170,7 @@ def updateEnergies(ri, rj, box, r_cut_box_sq, eps, sig, atomtypes,ai):
         rsq = np.sum(rij**2)  # Squared separation
         if rsq < r_cut_box_sq: # Check within cutoff
 
-            sr2    = sig[ai,aj] / rsq    # (sigma/rij)**2
+            sr2    = sig[ai,aj]**2 / rsq    # (sigma/rij)**2
             sr6  = sr2 ** 3
             sr12 = sr6 ** 2
             pot  = eps[ai,aj] * (sr12 - sr6)  
@@ -264,8 +265,7 @@ class MC_NVT(MCSample):
                                                    self.system.atomTypes[part])
             ri = self.MoveParticle(self.dr_max, r[part,:],self.system.boxSize)
             
-            if ri[0] > self.system.boxSize or ri[0] < 0:
-                print("FAKE NEWS: ", ri, self.system.boxSize)
+
             new_potential, new_virial = self.UpdateEnergies(ri,rj,atypes, \
                                                   self.system.atomTypes[part])
             TEST = self.Metropolis( self.system.beta* (new_potential \
@@ -296,7 +296,7 @@ class MC_NVT(MCSample):
                 
             if steps % self.updateInterval == 0:
                 self.UpdateMaxMove()
-                PrintPDB(self.system, steps ,"during_")
+                #PrintPDB(self.system, steps ,"during_")
             
         self.system.positions = r
         #######################################################################   
@@ -326,14 +326,15 @@ class MC_NVT(MCSample):
         
         self.nSamples += 1
         self.pressure += self.system.GetPressure(self.system.virial)
-        #self.pressure += self.system.PressureTailCorrection()
+        self.pressure += self.system.PressureTailCorrection()
         self.virial   += self.system.virial
         self.energy   += self.system.energy
         
-        print('Pressure: {:6.4f}, Energy: {:6.4f}, Samples: {:6d} Pressure: {:6.4f} '.format(  # PCorr {:6.4f}
-                self.pressure/self.nSamples, self.energy/self.nSamples, \
-                self.nSamples,self.system.GetPressure(self.system.virial))) #,, \
-        #self.system.PressureTailCorrection()
+        print('Pressure: {:6.4f}, Avg Energy: {:6.4f}, Energy: {:6.4f}, Samples: {:6d} Pressure: {:6.4f} Pcorr: {:6.4f} Ecorr {:6.4f}'.format(  # PCorr {:6.4f}
+                self.pressure/self.nSamples, self.energy/self.nSamples,self.system.energy, \
+                self.nSamples,self.system.GetPressure(self.system.virial), \
+                self.system.PressureTailCorrection(),self.system.EnergyTailCorrection() ) ) #,, \
+        
 
     
     def Metropolis(self, delta ):
@@ -420,6 +421,9 @@ def PrintPDB(system,step, name=""):
 
     f.close()  
 
+    
+
+        
         
 ###############################################################################
 #
@@ -435,7 +439,7 @@ phase1.GenerateRandomBox()
 PrintPDB(phase1, 0,"pre_")
 
 t_equil0=time.time()
-preequilibrate = MC_NVT(10000,  phase1, "Equilibration")
+preequilibrate = MC_NVT(100000,  phase1, "Equilibration")
 t_equil1=time.time()
 print("Time to equilibrate: ", t_equil1-t_equil0)
 
@@ -447,7 +451,7 @@ print("Time to equilibrate: ", t_equil1-t_equil0)
 PrintPDB(equilibrate.system, equilibrate.nSteps,"equil_")
 
 t_prod0=time.time()
-production1  = MC_NVT(10000000,  equilibrate.system, "Production1")
+production1  = MC_NVT(1000000,  equilibrate.system, "Production1")
 #production2  = KMC_NVT(1000,  overLap, production1.system, "Production2")
 t_prod1=time.time()
 print("Time for production: ", t_prod1-t_prod0)
