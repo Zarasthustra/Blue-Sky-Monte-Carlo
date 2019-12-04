@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 Created on Sat Nov 23 21:09:10 2019
 
@@ -65,7 +64,7 @@ class Table():
 
 class System():
     
-    def __init__(self,number_of_atoms, epsilon, sigma, boxSize, temp, cutOff,atomType):
+    def __init__(self,number_of_atoms,epsilon,sigma,boxSize,temp,cutOff,atomType):
         self.natoms = number_of_atoms
         self.atomType = atomType
         self.eps    = np.asarray(epsilon)
@@ -99,12 +98,18 @@ class System():
         return self.rho / self.beta  + virial / ( 3.0 * self.volume )
     
     def PressureTailCorrection(self):
-        return  16.0 / 3.0 * np.pi * self.rho **2 * self.sig **3 * self.eps * ( (2.0/3.0)*(self.sig / self.rCut)**9 - (self.sig / self.rCut)**3 )
+        return  16.0 / 3.0 * np.pi * self.rho **2 * self.sig **3 * self.eps \
+                * ( (2.0/3.0)*(self.sig / self.rCut)**9 \
+                   - (self.sig / self.rCut)**3 )
     def EnergyTailCorrection(self):
-        return  8.0 / 3.0 * np.pi * self.rho * self.natoms * self.sig **3 * self.eps * ( (1.0/3.0)*(self.sig / self.rCut)**9 - (self.sig / self.rCut)**3 )
+        return  8.0 / 3.0 * np.pi * self.rho * self.natoms * self.sig **3 \
+                * self.eps * ( (1.0/3.0)*(self.sig / self.rCut)**9 \
+                 - (self.sig / self.rCut)**3 )
     def ChemPotTailCorrection(self):
         """ beta * mu_corr = 2 * u_corr """
-        return 16.0 / 3.0 * np.pi * self.rho * self.sig **3 * self.eps * ( (1.0/3.0)*(self.sig / self.rCut)**9 - (self.sig / self.rCut)**3 )
+        return 16.0 / 3.0 * np.pi * self.rho * self.sig **3 * self.eps \
+               * ( (1.0/3.0)*(self.sig / self.rCut)**9 \
+               - (self.sig / self.rCut)**3 )
     def TotalEnergy(self):
         self.energy,self.virial = totalEnergy(self.positions, self.boxSize, \
                                               self.rCut_sq, self.natoms, \
@@ -112,8 +117,10 @@ class System():
                                               eps=self.vdwTable.eps,\
                                               atomtype = self.atomTypes)
     def GenerateVdWTable(self,vector1,vector2,rule1='vdw',rule2='LB'):
-        self.vdwTable = Table(np.asarray([(x + y)/2 for x in vector1 for y in vector1]).reshape(3,3), \
-                              np.asarray([np.sqrt(x+y) for x in vector2 for y in vector2]).reshape(3,3) \
+        self.vdwTable = Table(np.asarray([(x + y)/2 for x in vector1 for y \
+                                          in vector1]).reshape(3,3), \
+                              np.asarray([np.sqrt(x+y) for x in vector2 for y \
+                                          in vector2]).reshape(3,3) \
                               )  
     def WidomInsertion(self,molecule):
         print("testing")
@@ -135,7 +142,7 @@ def totalEnergy(r,box,r_cut_box_sq,n,sig,eps,atomtype):
                 sr2    = sig[ai,aj] / rij_sq    # (sigma/rij)**2
                 sr6  = sr2 ** 3
                 sr12 = sr6 ** 2
-                pot  = eps[ai,aj] * (sr12 - sr6)        # LJ pair potential (cut but not shifted)
+                pot  = eps[ai,aj] * (sr12 - sr6)
                 vir  = eps[ai,aj] * (2.0 * sr12 - sr6) 
                 
                 potential += pot
@@ -144,7 +151,8 @@ def totalEnergy(r,box,r_cut_box_sq,n,sig,eps,atomtype):
     return potential*4.0, virial*24.0
                 
 """ THis is outside class since Numba has issues with compiling methods """
-@nb.njit #(nb.int64,nb.float64[:],nb.float64,nb.float64,nb.float64[:,:],nb.float64[:,:], nb.float64,nb.float64, nb.float64)       
+@nb.njit #(nb.int64,nb.float64[:],nb.float64,nb.float64,nb.float64[:,:], \
+# nb.float64[:,:], nb.float64,nb.float64, nb.float64)       
 def updateEnergies(ri, rj, box, r_cut_box_sq, eps, sig, atomtypes,ai):
     rsq = 0.0
     potential = 0.0
@@ -164,8 +172,8 @@ def updateEnergies(ri, rj, box, r_cut_box_sq, eps, sig, atomtypes,ai):
             sr2    = sig[ai,aj] / rsq    # (sigma/rij)**2
             sr6  = sr2 ** 3
             sr12 = sr6 ** 2
-            pot  = eps[ai,aj] * (sr12 - sr6)        # LJ pair potential (cut but not shifted)
-            vir  = eps[ai,aj] * (2.0 * sr12 - sr6)                    # LJ pair virial
+            pot  = eps[ai,aj] * (sr12 - sr6)  
+            vir  = eps[ai,aj] * (2.0 * sr12 - sr6) # LJ pair virial
             
             potential += pot
             virial += vir
@@ -253,14 +261,15 @@ class MC_NVT(MCSample):
             atypes = np.delete(self.system.atomTypes,part,0)
             
             old_potential, old_virial = self.UpdateEnergies(ri,rj,atypes, \
-                                                            self.system.atomTypes[part])
+                                                   self.system.atomTypes[part])
             ri = self.MoveParticle(self.dr_max, r[part,:],self.system.boxSize)
             
             if ri[0] > self.system.boxSize or ri[0] < 0:
                 print("FAKE NEWS: ", ri, self.system.boxSize)
             new_potential, new_virial = self.UpdateEnergies(ri,rj,atypes, \
-                                                            self.system.atomTypes[part])
-            TEST = self.Metropolis( self.system.beta* (new_potential - old_potential)  )
+                                                  self.system.atomTypes[part])
+            TEST = self.Metropolis( self.system.beta* (new_potential \
+                                     - old_potential)  )
             self.moveAttempt += 1
             
             if TEST:
@@ -301,7 +310,8 @@ class MC_NVT(MCSample):
         dr_ratio = self.dr_max / dr_old
         if dr_ratio > 1.5: self.dr_max = dr_old * 1.5
         if dr_ratio < 0.5: self.dr_max = dr_old * 0.5
-        if self.dr_max > self.system.boxSize/2: self.dr_max = self.system.boxSize/2
+        if self.dr_max > self.system.boxSize/2: self.dr_max = \
+                                                self.system.boxSize/2
         
 
 
@@ -321,7 +331,8 @@ class MC_NVT(MCSample):
         self.energy   += self.system.energy
         
         print('Pressure: {:6.4f}, Energy: {:6.4f}, Samples: {:6d} Pressure: {:6.4f} '.format(  # PCorr {:6.4f}
-                self.pressure/self.nSamples, self.energy/self.nSamples, self.nSamples,self.system.GetPressure(self.system.virial))) #,, \
+                self.pressure/self.nSamples, self.energy/self.nSamples, \
+                self.nSamples,self.system.GetPressure(self.system.virial))) #,, \
         #self.system.PressureTailCorrection()
 
     
@@ -364,8 +375,9 @@ class MC_NVT(MCSample):
             if ( zeta <= cumw ): break # 
             k += 1
             if ( k >= len( w ) ): 
-                print("Welp, we messed up. Probably forgot to start indexing at 0 for pick_r()")
-                print(len(self.mobilities), np.sum(self.mobilities), cumw,self.totalMobility,zeta )
+                print("Probably forgot to start indexing at 0 for pick_r()")
+                print(len(self.mobilities), np.sum(self.mobilities), \
+                      cumw,self.totalMobility,zeta )
                 exit
 
             cumw += w[k]
@@ -403,10 +415,12 @@ def PrintPDB(system,step, name=""):
         j.append( str('%6.2f'%(float(0))).ljust(6) )#temp
         j.append( system.atomType.rjust(12) )#elname  
         #print(i,str(i).rjust(5),j[1], j[2])
-        f.write('{}{} {} {} {}{}    {}{}{}{}{}{}\n'.format( j[0],j[1],j[2],j[3],j[4],j[5],j[6],j[7],j[8],j[9],j[10],j[11]))
+        f.write('{}{} {} {} {}{}    {}{}{}{}{}{}\n'.format( j[0],j[1],j[2],\
+                j[3],j[4],j[5],j[6],j[7],j[8],j[9],j[10],j[11]))
 
     f.close()  
-      
+
+        
 ###############################################################################
 #
 #          Begin Simulation - Equilibrate then Production Run
@@ -415,7 +429,7 @@ def PrintPDB(system,step, name=""):
         
         
 # create a system
-phase1 = System(number_of_atoms,epsilon, sigma, boxSize, temperature, cutOff, atomType)
+phase1 = System(number_of_atoms,epsilon,sigma,boxSize,temperature,cutOff,atomType)
 phase1.GenerateRandomBox()
 
 PrintPDB(phase1, 0,"pre_")
