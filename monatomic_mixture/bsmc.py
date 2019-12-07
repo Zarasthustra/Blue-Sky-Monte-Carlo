@@ -1,13 +1,11 @@
 # -*- coding: utf-8 -*-
 """
 Created on Sat Nov 23 21:09:10 2019
-
 @author: Zarathustra
 """
 
 """
 Blue Sky Monte Carlo
-
 A.K.A. BSMC
 """
 
@@ -34,17 +32,33 @@ import time
 
  
 atomType = "Ar"
-epsilon = (1.0, 1.0, 1.0)
-sigma   = (1.0, 1.0, 1.0)
-composition = np.array([100,200,100])
+epsilon = (0.8, 1.0, 1.2)
+sigma   = (1.2, 1.0, 0.8)
+composition = np.array( [200,200,200])  
 number_of_atoms = sum(composition)
 number_of_atom_types = len(composition)
-boxSize = 7.93
+boxSize = 15.52245 #9.99 #7.93
 cutOff = boxSize / 2
 temperature = 1.0
 beta = 1/ temperature
 nEquilSteps = 100000
 outputInterval=2000
+
+"""
+Water
+need:
+    atom types
+    molecule number
+    charges
+    atomic weights
+    ewald/wolf
+    body-fixed coordinates
+    
+    atom array
+    molecular array
+    atomInMolecule
+    quaternion array
+"""
 
 ###############################################################################
 #
@@ -86,6 +100,8 @@ class System():
         self.forces = None
         
         self.GenerateVdWTable(self.eps, self.sig,rule1='vdw',rule2='LB')
+        
+        self.rho = self.natoms / self.volume
 
     def GenerateRandomBox(self):
         self.positions = np.random.rand(self.natoms,3) * self.boxSize
@@ -237,8 +253,12 @@ class MC_NVT(MCSample):
         chemSample = 0
         NchemTests = 1000
         testMol = 1
-        WIDOM = False
+        WIDOM = True
         
+        boxSize, dr_max, beta, atomTypes = self.system.boxSize, self.dr_max, \
+            self.system.beta, self.system.atomTypes
+        eps, sig, rCut_sq = self.system.vdwTable.eps, self.system.vdwTable.sig,\
+            self.system.rCut_sq
 
         print('Beginning {0:s} for {1:d} steps at {2:f} temperature'.format(
                 self.runType, self.nSteps, self.system.temp))
@@ -262,14 +282,13 @@ class MC_NVT(MCSample):
             atypes = np.delete(self.system.atomTypes,part,0)
             
             old_potential, old_virial = self.UpdateEnergies(ri,rj,atypes, \
-                                                   self.system.atomTypes[part])
-            ri = self.MoveParticle(self.dr_max, r[part,:],self.system.boxSize)
+                                                   atomTypes[part])
+            ri = self.MoveParticle(dr_max, r[part,:],boxSize)
             
 
             new_potential, new_virial = self.UpdateEnergies(ri,rj,atypes, \
-                                                  self.system.atomTypes[part])
-            TEST = self.Metropolis( self.system.beta* (new_potential \
-                                     - old_potential)  )
+                                                  atomTypes[part])
+            TEST = self.Metropolis( beta* (new_potential - old_potential)  )
             self.moveAttempt += 1
             
             if TEST:
@@ -281,14 +300,10 @@ class MC_NVT(MCSample):
             if steps % self.outputInterval == 0:
                 self.Sample()
                 
-                eps = self.system.vdwTable.eps
-                sig = self.system.vdwTable.sig
-                
                 if WIDOM:
-                    chemPot.append( WidomInsertion(r, self.system.boxSize,\
-                                               self.system.rCut_sq, eps, sig, \
-                                               self.system.atomTypes,testMol, \
-                                               NchemTests) 
+                    chemPot.append( WidomInsertion(r, boxSize,rCut_sq, eps, \
+                                                   sig,atomTypes,testMol, \
+                                                   NchemTests) 
                                   )
 
                     print("Chemical Potential: ", chemPot[chemSample])
@@ -299,6 +314,8 @@ class MC_NVT(MCSample):
                 #PrintPDB(self.system, steps ,"during_")
             
         self.system.positions = r
+        
+        self.Output_Conclusions()
         #######################################################################   
     def UpdateMaxMove(self):
 
@@ -313,7 +330,17 @@ class MC_NVT(MCSample):
         if self.dr_max > self.system.boxSize/2: self.dr_max = \
                                                 self.system.boxSize/2
         
-
+    def Output_Conclusions(self):
+        print("========================================================")
+        print("In Conclusion:")
+        print('Pressure: {:6.4f} \n Avg Energy: {:6.4f} \n Energy: {:6.4f} \
+              \n Samples: {:6d} \n Pressure: {:6.4f} \n Pcorr: {:6.4f} \n Ecorr {:6.4f} \
+              \n Density: {:6.4f}'.format(  # PCorr {:6.4f}
+                self.pressure/self.nSamples, self.energy/self.nSamples,self.system.energy, \
+                self.nSamples,self.system.GetPressure(self.system.virial), \
+                self.system.PressureTailCorrection(),self.system.EnergyTailCorrection(),
+                self.rho/self.nSamples) ) 
+        print("========================================================")
 
     def InitializeSimulation(self):
         """
@@ -329,6 +356,7 @@ class MC_NVT(MCSample):
         self.pressure += self.system.PressureTailCorrection()
         self.virial   += self.system.virial
         self.energy   += self.system.energy
+        self.rho      += self.system.natoms / self.system.volume
         
         print('Pressure: {:6.4f}, Avg Energy: {:6.4f}, Energy: {:6.4f}, Samples: {:6d} Pressure: {:6.4f} Pcorr: {:6.4f} Ecorr {:6.4f}'.format(  # PCorr {:6.4f}
                 self.pressure/self.nSamples, self.energy/self.nSamples,self.system.energy, \
@@ -355,8 +383,8 @@ class MC_NVT(MCSample):
     def UpdateEnergies(self,ri,rj,atomtypes,ai):
         """Calls outside function because it is @njit"""
 
-        eps = self.system.vdwTable.eps
-        sig = self.system.vdwTable.sig
+        eps, sig = self.system.vdwTable.eps, self.system.vdwTable.sig
+        
         return updateEnergies(ri, rj, self.system.boxSize, self.system.rCut_sq, \
                               eps, sig,atomtypes,ai)
 
