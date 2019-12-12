@@ -24,13 +24,12 @@ import time
 #
 ###############################################################################
 
-# need body_fixed coordinates for water
+# need body_fixed coordinates for water      || done
 # need proper units of measurement
-# need quaternions
-# need COM and shift COM
-# need book-keeping
-#
-#  Hve array of grid coords, once one is assigned, remove it from list
+# need quaternions                           || done
+# need COM and shift COM                     || done
+# need book-keeping                          || done-ish
+
 
 ###############################################################################
 #
@@ -42,13 +41,13 @@ import time
 atomType = "Ar"
 epsilon = (0.8, 1.0, 1.2)
 sigma   = (1.2, 1.0, 0.8)
-epsilon = [0.3, 1.0]
+epsilon = [0.5, 1.0]
 sigma = [0.1, 1.0]
 composition = np.array( [512] )  
 nMol = sum(composition)
 number_of_atom_types = len(composition)
 number_of_atoms = nMol*3
-boxSize = 9.93 #15.52245 #9.99 #7.93
+boxSize = 30.93 #15.52245 #9.99 #7.93
 cutOff = boxSize / 2
 temperature = 1.0
 beta = 1/ temperature
@@ -122,8 +121,9 @@ class System():
         self.rho = self.natoms / self.volume
 
     def GenerateBox(self,style="Random"):
+
         if style.lower() == "random":
-            self.COM = np.random.rand(self.natoms,3) * self.boxSize
+            self.COM = np.random.rand(self.nMol,3) * self.boxSize
         elif style.lower() == "cube" or style.lower() == "cubic":
             self.COM, self.rho, self.boxSize = InitCubicGrid(self.nMol,boxSize=self.boxSize)
         else:
@@ -136,14 +136,19 @@ class System():
         self.molTypes = []
         self.molNum = []
         self.atomNum = []
+        self.e = []
         self.startAtomEndAtom = np.zeros((self.nMol,2),dtype=np.int_)
         atom = 0
         for mol,coord in enumerate(self.COM):
             self.startAtomEndAtom[mol,0] = atom
+            ei = random_quaternion() 
+            self.e.append( ei )
+            ai = q_to_a ( ei )    # rotation matrix for quaternion ei
+            di = np.dot ( self.db, ai )
             for i in range(3):
                 self.atomNum.append(atom)
                 atom += 1
-                self.atomXYZ.append(coord + self.db[i,:])
+                self.atomXYZ.append(coord + di[i,:])
                 self.molTypes.append(0)
                 self.molNum.append(mol)
                 if i == 1:
@@ -158,10 +163,8 @@ class System():
         self.molTypes = np.asarray(self.molTypes)
         self.atomNum = np.asarray(self.atomNum)
         self.molNum = np.asarray(self.molNum)
-        self.nMol = len(self.COM)
-        self.nAtoms = len(self.atomXYZ)
+        self.e = np.asarray(self.e)
         print("atoms: ", len(self.atomXYZ),len(self.COM),self.atomTypes)
-        print(self.startAtomEndAtom)
         
     """shifts a molecules center of mass to [0,0,0]"""    
     def shiftCOM(self,COM,mass):
@@ -295,7 +298,7 @@ def updateEnergies(rMoli, rMolj, rAtomi, rAtomj,ai,aj, box, r_cut_box_sq, eps, s
     """Calculate chosen particle's potential energy with rest of system """
 
     #for index, rj in enumerate(r):
-    for i in range(n-1): # Inner loop over atoms
+    for i in range(n): # Inner loop over atoms
         rij = rMoli[:] - rMolj[i,:]    # molecule-molecule 
         rij = rij - box * np.rint(rij/box)  # mirror image
         rij_sq = np.sum( rij**2 )  # Squared separation
@@ -303,8 +306,10 @@ def updateEnergies(rMoli, rMolj, rAtomi, rAtomj,ai,aj, box, r_cut_box_sq, eps, s
         if rij_sq < r_cut_box_sq: # Check within cutoff
 
             jatoms = np.arange(sAeAj[i,0],sAeAj[i,1]+1)
+
             jr = rAtomj[jatoms,:]     # coords of atoms in mol j
             jatypes = aj[jatoms]
+
             
             for k in range(len(iatoms)):
                 ak = iatypes[k]
@@ -345,7 +350,7 @@ def WidomInsertion(rj,box,r_cut_box_sq,eps, sig, atomtypes,ai, N):
 """Object for sampling thermodynamic properties in a MC simulation"""      
 class MCSample():
     def __init__(self,rho=0.0,pressure=0.0,virial=0.0,energy=0.0,at=0.5, \
-                 av=0.5, ar=0.5, asw=0.5,output=20,dr_max=0.8 \
+                 av=0.5, ar=0.5, asw=0.5,output=2000,dr_max=0.8 \
                  ):
         self.rho = rho
         self.pressure = pressure
@@ -373,7 +378,7 @@ class MC_NVT(MCSample):
 
     def __init__(self, steps, system, runType='Blank',rho=0.0, pressure=0.0, \
                  virial=0.0, energy=0.0, at=0.5, av=0.5, ar=0.5, asw=0.5, \
-                 output=2000,dr_max=0.1):
+                 output=2000,dr_max=0.1,de_max=0.05):
         MCSample.__init__(self,rho=rho,pressure=pressure,virial=virial, \
                           energy=energy,at=at,av=av,ar=ar,asw=asw, \
                           output=output)
@@ -397,6 +402,8 @@ class MC_NVT(MCSample):
         rMol = self.system.COM              # simpler notation
         sAeA = self.system.startAtomEndAtom
         rAtom = self.system.atomXYZ
+        e = self.system.e
+        #print(e)
 
         #######################################################################
         #
@@ -409,32 +416,37 @@ class MC_NVT(MCSample):
             
             steps += 1
             part = self.PickParticle()
-            #print("=====",part)
+
             rMoli = rMol[part,:]
-            #print("old com: ",rMoli)
+
             rMolj = np.delete(rMol,part,0) # Array of all the other atoms
-            
+
             atomRange=np.arange(sAeA[part,0],sAeA[part,1]+1)
+            atomsShift = sAeA[part,1] - sAeA[part,0] + 1
             rAtomi= rAtom[atomRange,:]
             rAtomj = np.delete(rAtom,atomRange,0)
-            tempAtomTypesj = np.delete(atomTypes,atomRange,0)
             tempAtomTypesi = atomTypes[atomRange]
+            tempAtomTypesj = np.delete(atomTypes,atomRange,0)
+            
             temp_sAeAi = sAeA[part,:]
             temp_sAeAj = np.delete(sAeA,part,0)
-            #print("stage",sAeA[part])
+            temp_sAeAj = np.asarray([ item if i< part else item-atomsShift \
+                                     for i,item in enumerate(temp_sAeAj) ])
+
             old_potential, old_virial = self.UpdateEnergies(rMoli,rMolj,rAtomi,\
                                                             rAtomj,tempAtomTypesi, \
                                                             tempAtomTypesj,\
                                                             temp_sAeAi,temp_sAeAj)
+            
             rMoli_new = self.MoveParticle(dr_max, rMol[part,:],boxSize)
-            #print("newcom: ",rMoli_new)
+            #print( e[part] )
+            ei = random_rotate_quaternion ( de_max, e[part,:] )    # Trial rotation
+            ai = q_to_a ( ei ) # Rotation matrix for i
+            di = np.dot ( self.system.db, ai )
           
-            change = rMoli_new - rMoli
-            #print("change com: ",change, dr_max)
-            #print("=================")
-            #print(rAtomi)
-            rAtomi += change
-            #print(rAtomi)
+            #change = rMoli_new - rMoli
+            rAtomi = rMoli_new + di
+            #rAtomi += change
 
             new_potential, new_virial = self.UpdateEnergies(rMoli_new,rMolj,rAtomi,\
                                                             rAtomj,tempAtomTypesi, \
@@ -449,9 +461,7 @@ class MC_NVT(MCSample):
                 self.system.energy += (new_potential - old_potential)
                 self.system.virial += (new_virial - old_virial)
                 self.moveAccept += 1
-                #print("passed: ",new_potential - old_potential )
-            #else:
-                #print("failed: ",new_potential - old_potential )
+
                 
             if steps % self.outputInterval == 0:
                 self.Sample()
@@ -471,6 +481,7 @@ class MC_NVT(MCSample):
             
         self.system.COM = rMol
         self.atomXYZ = rAtom
+        self.e = e
         
         self.Output_Conclusions()
         #######################################################################   
@@ -547,7 +558,6 @@ class MC_NVT(MCSample):
         return updateEnergies(rMoli,rMolj,rAtomi,rAtomj,ai,aj, self.system.boxSize, \
                               self.system.rCut_sq, eps, sig,sAeAi,sAeAj)
 
-
 ###############################################################################
    
     def MoveParticle(self,dr_max,r,box):     
@@ -588,21 +598,25 @@ def LennardJones(rij, sigma, epsilon):
 
 def PrintPDB(system,step, name=""):
     f = open(str(name) + "system_step_" + str(step) + ".pdb",'w') 
-
+    conv = 1.0
+    k=-1
     for i in range(system.natoms):
+
+        if i  % 3 == 0:
+            k+=1
         j = []
-        j.append( "ATOM".ljust(6) )#atom#6s
+        j.append( "HETATM".ljust(6) )#atom#6s
         j.append( '{}'.format(str(i+1)).rjust(5) )#aomnum#5d
         j.append( system.atomType.center(4) )#atomname$#4s
         j.append( "MOL".ljust(3) )#resname#1s
-        j.append( "A".rjust(1) )#Astring
-        j.append( str(i+1).rjust(4) )#resnum
-        j.append( str('%8.3f' % (float(system.atomXYZ[i][0])*10)).rjust(8) ) #x
-        j.append( str('%8.3f' % (float(system.atomXYZ[i][1])*10)).rjust(8) )#y
-        j.append( str('%8.3f' % (float(system.atomXYZ[i][2])*10)).rjust(8) ) #z\
+        j.append( str('{}'.format(system.atomName[i])).rjust(2) )#Astring
+        j.append( str('{}'.format(k)).rjust(3) )#resnum
+        j.append( str('%8.3f' % (float(system.atomXYZ[i][0])*conv)).rjust(8) ) #x
+        j.append( str('%8.3f' % (float(system.atomXYZ[i][1])*conv)).rjust(8) )#y
+        j.append( str('%8.3f' % (float(system.atomXYZ[i][2])*conv)).rjust(8) ) #z\
         j.append( str('%6.2f'%(float(1))).rjust(6) )#occ
         j.append( str('%6.2f'%(float(0))).ljust(6) )#temp
-        j.append( system.atomType.rjust(12) )#elname  
+        j.append( system.atomName[i].rjust(12) )#elname  
         #print(i,str(i).rjust(5),j[1], j[2])
         f.write('{}{} {} {} {}{}    {}{}{}{}{}{}\n'.format( j[0],j[1],j[2],\
                 j[3],j[4],j[5],j[6],j[7],j[8],j[9],j[10],j[11]))
@@ -626,8 +640,10 @@ def InitCubicGrid(nMol, rho=0.0, boxSize=0.0):
     #         rho       density
     #---------------------------------------------------------------------------------------------------
     if boxSize == 0.0 and rho != 0.0:
+        print("Rho given, boxSize not given")
         boxSize = (float(nMol)/rho)**(1.0/3.0)
     elif rho == 0.0 and boxSize != 0.0:
+        print("BoxSize given, rho not given")
         rho = float(nMol) / boxSize **3
     else:
         print("Trying to create a cubic grid but neither rho or boxSize is known")
@@ -664,8 +680,107 @@ def InitCubicGrid(nMol, rho=0.0, boxSize=0.0):
 #    if 'centered' in initConfig:
 #        """ shift so that center of box is at (0,0,0)"""
 #        rMol[:,:] = rMol[:,:] - L / 2 
+def random_quaternion():
+    """Returns a random unit quaternion as a numpy array of 4 elements. A&T"""
 
-        
+    import numpy as np
+    
+    while True: # Loop until within unit disk
+        zeta = 2.0*np.random.rand(2) - 1.0 # Two uniform random numbers between -1 and 1
+        norm1 = np.sum ( zeta**2 )         # Squared magnitude
+        if norm1 < 1.0:                    # Test for within unit disk
+            break
+
+    while True: # Loop until within unit disk
+        beta = 2.0*np.random.rand(2) - 1.0 # Two uniform random numbers between -1 and 1
+        norm2 = np.sum ( beta**2 )         # Squared magnitude
+        if norm2 < 1.0:                    # Test for within unit disk
+            break
+
+    f = np.sqrt ( ( 1.0 - norm1 ) / norm2 )
+    return np.array ( ( zeta[0], zeta[1], beta[0]*f, beta[1]*f ), dtype=np.float_ ) # Random quaternion
+
+def random_vector():
+    """Returns a random unit vector as a numpy array of 3 elements."""
+
+    import numpy as np
+
+    zeta = np.random.rand(2) # Two uniformly sampled random numbers in range (0,1)
+    c = 2.0*zeta[0] - 1.0    # Random cos(theta) uniformly sampled in range (-1,+1)
+    if c >= 1.0:             # Guard against very small chance of roundoff error
+        s = 0.0              # Set sin(theta) to zero
+    else:
+        s = np.sqrt(1.0-c**2) # Calculate sin(theta) from cos(theta), always positive
+
+    phi = zeta[1] * 2.0*np.pi # Random angle uniformly sampled in range (0,2*pi)
+
+    return np.array ( ( s*np.cos(phi), s*np.sin(phi), c ), dtype=np.float_ ) # Random unit vector
+
+def random_rotate_quaternion ( angle_max, old ):
+    """Returns a unit quaternion rotated by a maximum angle (in radians) relative to the old quaternion."""
+    import numpy as np
+
+    # Note that the reference quaternion should be normalized and we test for this
+    assert old.size==4, 'Error in old quaternion dimension'
+    assert np.isclose(np.sum(old**2),1.0), 'old normalization error {} {} {} {}'.format(*old)
+
+    axis = random_vector()                             # Choose random unit vector
+    angle = ( 2.0*np.random.rand() - 1.0 ) * angle_max # Uniform random angle in desired range
+    e = rotate_quaternion ( angle, axis, old )         # General rotation function
+    return e
+
+def rotate_quaternion ( angle, axis, old ):
+    """Returns a quaternion rotated by angle about axis relative to old quaternion."""
+
+    import numpy as np
+
+    # Note that the axis vector should be normalized and we test for this
+    # In general, the old quaternion need not be normalized, and the same goes for the result
+    # although in our applications we only ever use unit quaternions (to represent orientations)
+    assert old.size==4, 'Error in old quaternion dimension'
+    assert axis.size==3, 'Error in axis dimension'
+    assert np.isclose (np.sum(axis**2),1.0), 'axis normalization error {} {} {}'.format(*axis)
+
+    # Standard formula for rotation quaternion, using half angles
+    rot = np.sin(0.5*angle) * axis
+    rot = np.array([np.cos(0.5*angle),rot[0],rot[1],rot[2]],dtype=np.float_)
+
+    e = quatmul ( rot, old ) # Apply rotation to old quaternion
+    return e
+
+
+def quatmul ( a, b ):
+    """Returns quaternion product of two supplied quaternions."""
+
+    import numpy as np
+
+    assert a.size==4, 'Error in a dimension'
+    assert b.size==4, 'Error in b dimension'
+
+    return np.array ( [ a[0]*b[0] - a[1]*b[1] - a[2]*b[2] - a[3]*b[3],
+                        a[1]*b[0] + a[0]*b[1] - a[3]*b[2] + a[2]*b[3],
+                        a[2]*b[0] + a[3]*b[1] + a[0]*b[2] - a[1]*b[3],
+                        a[3]*b[0] - a[2]*b[1] + a[1]*b[2] + a[0]*b[3] ], dtype=np.float_ )
+def q_to_a ( q ):
+    """Returns a 3x3 rotation matrix calculated from supplied quaternion."""
+
+    import numpy as np
+
+    # The rows of the rotation matrix correspond to unit vectors of the molecule in the space-fixed frame
+    # The third row  a(3,:) is "the" axis of the molecule, for uniaxial molecules
+    # Use a to convert space-fixed to body-fixed axes thus: db = np.dot(a,ds)
+    # Use transpose of a to convert body-fixed to space-fixed axes thus: ds = np.dot(db,a)
+
+    # The supplied quaternion should be normalized and we check for this
+    assert np.isclose(np.sum(q**2),1.0), 'quaternion normalization error {} {} {} {}'.format(*q)
+
+    # Write out row by row, for clarity
+    a = np.empty( (3,3), dtype=np.float_ )
+    a[0,:] = [ q[0]**2+q[1]**2-q[2]**2-q[3]**2,   2*(q[1]*q[2]+q[0]*q[3]),       2*(q[1]*q[3]-q[0]*q[2])     ]
+    a[1,:] = [     2*(q[1]*q[2]-q[0]*q[3]),   q[0]**2-q[1]**2+q[2]**2-q[3]**2,   2*(q[2]*q[3]+q[0]*q[1])     ]
+    a[2,:] = [     2*(q[1]*q[3]+q[0]*q[2]),       2*(q[2]*q[3]-q[0]*q[1]),   q[0]**2-q[1]**2-q[2]**2+q[3]**2 ]
+
+    return a        
         
 ###############################################################################
 #
