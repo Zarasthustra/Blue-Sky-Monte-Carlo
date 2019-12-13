@@ -41,20 +41,31 @@ import time
 atomType = "Ar"
 epsilon = (0.8, 1.0, 1.2)
 sigma   = (1.2, 1.0, 0.8)
-epsilon = [0.5, 1.0]
-sigma = [0.1, 1.0]
-composition = np.array( [512] )  
+epsilon = [1.0, 1.0]
+sigma = [1.0, 1.0]
+#epsilon = [5.726]  # kJ/mol
+#sigma = [0.483]    # nm
+composition = np.array( [256] )  
 nMol = sum(composition)
 number_of_atom_types = len(composition)
 number_of_atoms = nMol*3
-boxSize = 30.93 #15.52245 #9.99 #7.93
-cutOff = boxSize / 2
-temperature = 1.0
+rHo = 0.31240
+boxSize = (nMol / rHo)**(1/3) #15.52245 #9.99 #7.93
+cutOff = 2.612 #boxSize / 2
+temperature = 0.6
 beta = 1/ temperature
-nEquilSteps = 10000
+nEquilSteps = 100000
 outputInterval=100
 initConfig = "positive"
+# rho = N/V -> V = N/rho = 512/0.32655
 
+
+r_cut    = 2.612 # in sigma=1 units, where r_cut = 1.2616 nm, sigma = 0.483 nm
+sr_cut   = 1.0/r_cut
+sr_cut6  = sr_cut**6
+sr_cut12 = sr_cut6**2
+lambda1  = 4.0*(7.0*sr_cut6-13.0*sr_cut12)
+lambda2  = -24.0*(sr_cut6-2.0*sr_cut12)*sr_cut
 """
 Water
 need:
@@ -73,6 +84,16 @@ need:
 h2oBF = np.array([[0,0,0],
                   [0.79926,0.56518,0],
                   [1.59852,0,0]],dtype=np.float_)
+# isosceles example
+h2oBF = np.array([[0,0,0],
+                  [0.51763809020504/2,0.96592582628907,0],
+                  [0.51763809020504,0,0]],dtype=np.float_)
+    
+#alpha  = 75.0 * np.pi / 180.0
+#alpha2 = alpha / 2.0
+#h2oBF = np.array([[-np.sin(alpha2), 0.0,   -np.cos(alpha2)/3.0],
+#               [0.0,            0.0, 2.0*np.cos(alpha2)/3.0],
+#               [np.sin(alpha2), 0.0,    -np.cos(alpha2)/3.0]], dtype=np.float_)
 atomNames = ["Hw","OW","HW"]
 
 
@@ -130,7 +151,8 @@ class System():
             print("Type of simulation box unknown, failing GenerateBox")
             
         self.atomTypes = [] #np.zeros((self.natoms),dtype=np.int_)
-        self.db = self.shiftCOM(h2oBF,[1.008,15.9998,1.008])
+        #self.db = self.shiftCOM(h2oBF,[1.008,15.9998,1.008])
+        self.db = self.shiftCOM(h2oBF,[1.008,1.008,1.008])
         self.atomXYZ = []
         self.atomName = []
         self.molTypes = []
@@ -193,7 +215,8 @@ class System():
             start += item
     """Calculated pressure from the virial equation""" 
     def GetPressure(self,virial):
-        return self.rho / self.beta  + virial / ( 3.0 * self.volume )
+        #return self.rho / self.beta  + virial / ( 3.0 * self.volume )
+        return  virial / ( 3.0 * self.volume )
    
     """Calculates pressure tail correction for LJ"""
     def PressureTailCorrection(self):
@@ -246,6 +269,7 @@ def totalEnergy(rMol,rAtoms,box,r_cut_box_sq,sig,eps,atomtype,sAeA):
     # this calculates the molecular virial - should move outside, save time
     potential = 0.0
     virial = 0.0
+    CutShift = True
     n = len(rMol)
     for i in range(n-1): # Outer loop over atoms
         for j in range(i+1,n): # Inner loop over atoms
@@ -273,15 +297,21 @@ def totalEnergy(rMol,rAtoms,box,r_cut_box_sq,sig,eps,atomtype,sAeA):
                         sr2  = sig[ak,al]**2 / rab_sq    # (sigma/rij)**2
                         sr6  = sr2 ** 3
                         sr12 = sr6 ** 2
-                        pot  = eps[ak,al] * (sr12 - sr6)
-                        vir  = eps[ak,al] * (2.0 * sr12 - sr6) 
+                        
+                        if CutShift:
+                            rmag  = np.sqrt(rab_sq)
+                            pot  = 4.0*eps[ak,al] * (sr12 - sr6) + lambda1 + lambda2*rmag # LJ atom-atom pair potential (force-shifted)
+                            vir  = 24.0*eps[ak,al] * (2.0 * sr12 - sr6) - lambda2*rmag      # LJ atom-atom pair virial
+                        else:
+                            pot  = 4.0*eps[ak,al] * (sr12 - sr6)
+                            vir  = 24.0*eps[ak,al] * (2.0 * sr12 - sr6) 
                         
                         fab   = rab * vir / rab_sq   # LJ atom-atom pair force
                         potential += pot
                         virial += np.sum(rij*fab)
                         
                 
-    return potential*4.0, virial*24.0
+    return potential, virial
                 
 """ Updates LJ potential energy after a MC move. uses Numba acceleration"""
 @nb.njit #(nb.int64,nb.float64[:],nb.float64,nb.float64,nb.float64[:,:], \
@@ -295,6 +325,7 @@ def updateEnergies(rMoli, rMolj, rAtomi, rAtomj,ai,aj, box, r_cut_box_sq, eps, s
     iatoms = np.arange(sAeAi[0],sAeAi[1]+1)
     ir = rAtomi    # coords of atoms in mol i
     iatypes = ai
+    CutShift = True
     """Calculate chosen particle's potential energy with rest of system """
 
     #for index, rj in enumerate(r):
@@ -323,14 +354,19 @@ def updateEnergies(rMoli, rMolj, rAtomi, rAtomj,ai,aj, box, r_cut_box_sq, eps, s
                     sr2  = sig[ak,al]**2 / rab_sq    # (sigma/rij)**2
                     sr6  = sr2 ** 3
                     sr12 = sr6 ** 2
-                    pot  = eps[ak,al] * (sr12 - sr6)
-                    vir  = eps[ak,al] * (2.0 * sr12 - sr6) 
+                    if CutShift:
+                        rmag  = np.sqrt(rab_sq)
+                        pot  = 4.0*eps[ak,al] * (sr12 - sr6) + lambda1 + lambda2*rmag # LJ atom-atom pair potential (force-shifted)
+                        vir  = 24.0*eps[ak,al] * (2.0 * sr12 - sr6) - lambda2*rmag      # LJ atom-atom pair virial
+                    else:
+                        pot  = 4.0*eps[ak,al] * (sr12 - sr6)
+                        vir  = 24.0*eps[ak,al] * (2.0 * sr12 - sr6)  
                     
                     fab   = rab * vir / rab_sq   # LJ atom-atom pair force
                     potential += pot
                     virial += np.sum(rij*fab)
 
-    return 4*potential, 24*virial
+    return potential, virial
 
 """Peforms a widom insertion N times, uses Numba acceleration"""
 @nb.njit    
@@ -343,14 +379,13 @@ def WidomInsertion(rj,box,r_cut_box_sq,eps, sig, atomtypes,ai, N):
         testPot, testVirial = updateEnergies( ri, rj, box, r_cut_box_sq, eps,
                                              sig, atomtypes,ai)
         chemPot += np.exp( -beta * testPot )
-        #print(i, testPot, testVirial, eps, sig, ai, ri, box, rj)
-    #print("chemPot: ", chemPot, beta)
+
     return -np.log( chemPot/N )
  
 """Object for sampling thermodynamic properties in a MC simulation"""      
 class MCSample():
     def __init__(self,rho=0.0,pressure=0.0,virial=0.0,energy=0.0,at=0.5, \
-                 av=0.5, ar=0.5, asw=0.5,output=2000,dr_max=0.8 \
+                 av=0.5, ar=0.5, asw=0.5,output=2000,dr_max=0.05,de_max=0.05 \
                  ):
         self.rho = rho
         self.pressure = pressure
@@ -359,6 +394,9 @@ class MCSample():
         self.acceptTranslation = at
         self.moveAccept = 0
         self.moveAttempt = 0
+        self.acceptRotation = ar
+        self.RotAccept = 0
+        self.RotAttempt = 0
         self.acceptVolume = av
         self.volumeAccept = 0
         self.volumeAttempt = 0
@@ -370,8 +408,9 @@ class MCSample():
         self.swapAttempt = 0
         self.nSamples = 0
         self.outputInterval = output
-        self.updateInterval = output
+        self.updateInterval = output/10
         self.dr_max = dr_max
+        self.de_max = de_max
 
 """Object class for an NVT MC simulations. Contains main loop"""              
 class MC_NVT(MCSample):
@@ -387,7 +426,7 @@ class MC_NVT(MCSample):
         self.runType = runType
         chemPot = []
         chemSample = 0
-        NchemTests = 10000
+        NchemTests = 1000
         testMol = 0
         WIDOM = False
         
@@ -460,6 +499,7 @@ class MC_NVT(MCSample):
                 rAtom[atomRange,:] = rAtomi
                 self.system.energy += (new_potential - old_potential)
                 self.system.virial += (new_virial - old_virial)
+                e[part,:] = ei
                 self.moveAccept += 1
 
                 
@@ -498,6 +538,18 @@ class MC_NVT(MCSample):
         if dr_ratio < 0.5: self.dr_max = dr_old * 0.5
         if self.dr_max > self.system.boxSize/2: self.dr_max = \
                                                 self.system.boxSize/2
+                                                
+    def UpdateMaxRotation(self):
+
+        ratio = self.RotAccept / self.RotAttempt
+
+        de_old = self.de_max
+
+        self.de_max = self.de_max * ratio / self.acceptRotation 
+        de_ratio = self.de_max / de_old
+        if de_ratio > 1.5: self.de_max = de_old * 1.5
+        if de_ratio < 0.5: self.de_max = de_old * 0.5
+        #if self.de_max > 
         
     def Output_Conclusions(self):
         print("========================================================")
@@ -522,7 +574,7 @@ class MC_NVT(MCSample):
         
         self.nSamples += 1
         self.pressure += self.system.GetPressure(self.system.virial)
-        self.pressure += self.system.PressureTailCorrection()
+        #self.pressure += self.system.PressureTailCorrection()
         self.virial   += self.system.virial
         self.energy   += self.system.energy
         self.rho      += self.system.natoms / self.system.volume
@@ -796,7 +848,7 @@ phase1.GenerateBox("cube")
 PrintPDB(phase1, 0,"pre_")
 
 t_equil0=time.time()
-preequilibrate = MC_NVT(10000,  phase1, "Equilibration")
+preequilibrate = MC_NVT(500000,  phase1, "Equilibration")
 t_equil1=time.time()
 print("Time to equilibrate: ", t_equil1-t_equil0)
 
@@ -808,7 +860,7 @@ print("Time to equilibrate: ", t_equil1-t_equil0)
 PrintPDB(equilibrate.system, equilibrate.nSteps,"equil_")
 
 t_prod0=time.time()
-production1  = MC_NVT(100000,  equilibrate.system, "Production1")
+production1  = MC_NVT(1000000,  equilibrate.system, "Production1")
 #production2  = KMC_NVT(1000,  overLap, production1.system, "Production2")
 t_prod1=time.time()
 print("Time for production: ", t_prod1-t_prod0)
