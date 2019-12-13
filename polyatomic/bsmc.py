@@ -89,11 +89,11 @@ h2oBF = np.array([[0,0,0],
                   [0.51763809020504/2,0.96592582628907,0],
                   [0.51763809020504,0,0]],dtype=np.float_)
     
-#alpha  = 75.0 * np.pi / 180.0
-#alpha2 = alpha / 2.0
-#h2oBF = np.array([[-np.sin(alpha2), 0.0,   -np.cos(alpha2)/3.0],
-#               [0.0,            0.0, 2.0*np.cos(alpha2)/3.0],
-#               [np.sin(alpha2), 0.0,    -np.cos(alpha2)/3.0]], dtype=np.float_)
+alpha  = 75.0 * np.pi / 180.0
+alpha2 = alpha / 2.0
+h2oBF = np.array([[-np.sin(alpha2), 0.0,   -np.cos(alpha2)/3.0],
+               [0.0,            0.0, 2.0*np.cos(alpha2)/3.0],
+               [np.sin(alpha2), 0.0,    -np.cos(alpha2)/3.0]], dtype=np.float_)
 atomNames = ["Hw","OW","HW"]
 
 
@@ -220,13 +220,13 @@ class System():
    
     """Calculates pressure tail correction for LJ"""
     def PressureTailCorrection(self):
-        return  16.0 / 3.0 * np.pi * self.rho **2 * self.vdwTable.sig[0,0] **3 * self.vdwTable.eps[0,0] \
+        return  16.0 / 3.0 * np.pi * (self.natoms / self.volume) **2 * self.vdwTable.sig[0,0] **3 * self.vdwTable.eps[0,0] \
                 * ( (2.0/3.0)*(self.vdwTable.sig[0,0] / self.rCut)**9 \
                    - (self.vdwTable.sig[0,0] / self.rCut)**3 )
      
     """Calculates potential energy tail correction for LJ"""           
     def EnergyTailCorrection(self):
-        return  8.0 / 3.0 * np.pi * self.rho * self.natoms * self.vdwTable.sig[0,0] **3 \
+        return  8.0 / 3.0 * np.pi  * self.natoms**2 / self.volume * self.vdwTable.sig[0,0] **3 \
                 * self.vdwTable.eps[0,0] * ( (1.0/3.0)*(self.vdwTable.sig[0,0] / self.rCut)**9 \
                  - (self.vdwTable.sig[0,0] / self.rCut)**3 )
     
@@ -516,7 +516,8 @@ class MC_NVT(MCSample):
                     chemSample += 1
                 
             if steps % self.updateInterval == 0:
-                self.UpdateMaxMove()
+                continue
+                #self.UpdateMaxMove()
                 #PrintPDB(self.system, steps ,"during_")
             
         self.system.COM = rMol
@@ -848,7 +849,7 @@ phase1.GenerateBox("cube")
 PrintPDB(phase1, 0,"pre_")
 
 t_equil0=time.time()
-preequilibrate = MC_NVT(500000,  phase1, "Equilibration")
+preequilibrate = MC_NVT(1000000,  phase1, "Equilibration")
 t_equil1=time.time()
 print("Time to equilibrate: ", t_equil1-t_equil0)
 
@@ -860,7 +861,7 @@ print("Time to equilibrate: ", t_equil1-t_equil0)
 PrintPDB(equilibrate.system, equilibrate.nSteps,"equil_")
 
 t_prod0=time.time()
-production1  = MC_NVT(1000000,  equilibrate.system, "Production1")
+production1  = MC_NVT(10000000,  equilibrate.system, "Production1")
 #production2  = KMC_NVT(1000,  overLap, production1.system, "Production2")
 t_prod1=time.time()
 print("Time for production: ", t_prod1-t_prod0)
